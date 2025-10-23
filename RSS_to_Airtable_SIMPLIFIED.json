@@ -1,0 +1,465 @@
+{
+  "name": "RSS to Airtable - Simplified (AI + Multi-Scraper)",
+  "nodes": [
+    {
+      "id": "sticky-overview",
+      "name": "📋 Workflow Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [240, 240],
+      "parameters": {
+        "width": 460,
+        "height": 380,
+        "content": "# RSS to Airtable (Simplified)\n\n## What It Does:\n1. ✅ Reads RSS feed every 30 min\n2. ✅ Checks for duplicates (static data)\n3. ✅ Scrapes content (3 methods + fallback)\n4. ✅ AI summarization\n5. ✅ AI content generation\n6. ✅ Saves to Airtable\n\n## Scraping Methods (in order):\n- HTTP Request with headers\n- Apify API (if configured)\n- Firecrawl API (if configured)\n- RSS content (fallback)\n\n## Setup Needed:\n- RSS_FEED_URL env var\n- AIRTABLE_BASE_ID env var\n- AIRTABLE_TABLE_NAME env var\n- OpenAI credentials\n- Optional: Apify/Firecrawl API keys"
+      }
+    },
+    {
+      "id": "cron-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [780, 320],
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "value": 30,
+              "unit": "minutes"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger (Testing)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [780, 220],
+      "parameters": {}
+    },
+    {
+      "id": "rss-feed-read",
+      "name": "RSS Feed Reader",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [1000, 280],
+      "parameters": {
+        "url": "={{ $env.RSS_FEED_URL || 'https://example.com/feed' }}"
+      }
+    },
+    {
+      "id": "split-batches",
+      "name": "Process One Article at a Time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1220, 280],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "function-dedupe",
+      "name": "Check for Duplicate URL",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1440, 280],
+      "parameters": {
+        "functionCode": "// Get workflow static data for deduplication\nconst staticData = getWorkflowStaticData('global');\n\n// Initialize processed URLs array if not exists\nif (!staticData.processedUrls) {\n  staticData.processedUrls = [];\n}\n\n// Get current article data\nconst currentUrl = items[0].json.link;\nconst articleTitle = items[0].json.title || 'Untitled';\nconst articlePubDate = items[0].json.pubDate || new Date().toISOString();\nconst rssContent = items[0].json.content || items[0].json.contentSnippet || '';\nconst rssSummary = items[0].json.contentSnippet || '';\n\n// Check if URL was already processed\nconst isDuplicate = staticData.processedUrls.includes(currentUrl);\n\n// Prepare output data\nitems[0].json = {\n  isDuplicate: isDuplicate,\n  articleUrl: currentUrl,\n  articleTitle: articleTitle,\n  articlePubDate: articlePubDate,\n  rssContent: rssContent,\n  rssSummary: rssSummary\n};\n\nreturn items;"
+      }
+    },
+    {
+      "id": "if-duplicate",
+      "name": "Skip if Duplicate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1660, 280],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.isDuplicate}}",
+              "value2": false,
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "sticky-scraping",
+      "name": "🌐 Multi-Method Scraping",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1820, 160],
+      "parameters": {
+        "width": 600,
+        "height": 180,
+        "content": "# Smart Content Scraping\n\nTries 3 methods sequentially until one succeeds:\n1. **Direct HTTP** - Fast, works for simple sites\n2. **Apify API** - Handles complex JavaScript sites (if API key set)\n3. **Firecrawl API** - Good general scraper (if API key set)\n4. **RSS Content** - Always works as ultimate fallback"
+      }
+    },
+    {
+      "id": "code-scraper",
+      "name": "Try All Scraping Methods",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 360],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Multi-method web scraping with automatic fallback\nconst url = $input.first().json.articleUrl;\nconst rssContent = $input.first().json.rssContent;\n\nlet scrapedContent = '';\nlet scrapingMethod = 'None';\n\n// Helper function to extract text from HTML\nfunction extractTextFromHtml(html) {\n  // Remove script and style tags\n  let text = html.replace(/<script[^>]*>.*?<\\/script>/gi, '');\n  text = text.replace(/<style[^>]*>.*?<\\/style>/gi, '');\n  \n  // Try to find article content using common selectors\n  const articleMatches = text.match(/<article[^>]*>(.*?)<\\/article>/is) ||\n                        text.match(/<div[^>]*class=\"[^\"]*content[^\"]*\"[^>]*>(.*?)<\\/div>/is) ||\n                        text.match(/<main[^>]*>(.*?)<\\/main>/is);\n  \n  if (articleMatches && articleMatches[1]) {\n    text = articleMatches[1];\n  }\n  \n  // Remove remaining HTML tags\n  text = text.replace(/<[^>]+>/g, ' ');\n  \n  // Clean up whitespace\n  text = text.replace(/\\s+/g, ' ').trim();\n  \n  return text;\n}\n\n// METHOD 1: Direct HTTP Request\ntry {\n  const response = await fetch(url, {\n    method: 'GET',\n    headers: {\n      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',\n      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',\n      'Accept-Language': 'en-US,en;q=0.5'\n    },\n    redirect: 'follow'\n  });\n  \n  if (response.ok) {\n    const html = await response.text();\n    scrapedContent = extractTextFromHtml(html);\n    \n    if (scrapedContent.length > 200) {\n      scrapingMethod = 'HTTP Request';\n      console.log('✅ HTTP Request succeeded');\n    }\n  }\n} catch (error) {\n  console.log('❌ HTTP Request failed:', error.message);\n}\n\n// METHOD 2: Apify (only if HTTP failed and API key is available)\nif (!scrapedContent && $env.APIFY_API_TOKEN) {\n  try {\n    const apifyResponse = await fetch('https://api.apify.com/v2/acts/apify~web-scraper/run-sync-get-dataset-items', {\n      method: 'POST',\n      headers: {\n        'Content-Type': 'application/json',\n        'Authorization': `Bearer ${$env.APIFY_API_TOKEN}`\n      },\n      body: JSON.stringify({\n        startUrls: [{ url: url }],\n        pageFunction: 'async function pageFunction(context) { return { content: document.body.innerText }; }'\n      })\n    });\n    \n    if (apifyResponse.ok) {\n      const data = await apifyResponse.json();\n      if (data && data[0] && data[0].content) {\n        scrapedContent = data[0].content;\n        scrapingMethod = 'Apify';\n        console.log('✅ Apify succeeded');\n      }\n    }\n  } catch (error) {\n    console.log('❌ Apify failed:', error.message);\n  }\n}\n\n// METHOD 3: Firecrawl (only if previous methods failed and API key is available)\nif (!scrapedContent && $env.FIRECRAWL_API_KEY) {\n  try {\n    const firecrawlResponse = await fetch('https://api.firecrawl.dev/v0/scrape', {\n      method: 'POST',\n      headers: {\n        'Content-Type': 'application/json',\n        'Authorization': `Bearer ${$env.FIRECRAWL_API_KEY}`\n      },\n      body: JSON.stringify({\n        url: url,\n        formats: ['markdown']\n      })\n    });\n    \n    if (firecrawlResponse.ok) {\n      const data = await firecrawlResponse.json();\n      if (data && data.data && data.data.markdown) {\n        scrapedContent = data.data.markdown;\n        scrapingMethod = 'Firecrawl';\n        console.log('✅ Firecrawl succeeded');\n      }\n    }\n  } catch (error) {\n    console.log('❌ Firecrawl failed:', error.message);\n  }\n}\n\n// FALLBACK: Use RSS content\nif (!scrapedContent) {\n  scrapedContent = rssContent || 'No content available';\n  scrapingMethod = 'RSS Fallback';\n  console.log('ℹ️ Using RSS content as fallback');\n}\n\n// Return the scraped content with metadata\nreturn [{\n  json: {\n    ...$input.first().json,\n    fullArticleContent: scrapedContent,\n    scrapingMethod: scrapingMethod,\n    contentLength: scrapedContent.length\n  }\n}];"
+      }
+    },
+    {
+      "id": "sticky-ai",
+      "name": "🤖 AI Processing",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2100, 160],
+      "parameters": {
+        "width": 520,
+        "height": 180,
+        "content": "# AI Content Enhancement\n\n1. **Summarization**: Creates concise summary (150-200 words)\n2. **Content Generation**: Writes new original content (300-400 words)\n\nBoth use OpenAI GPT-4o-mini for cost efficiency."
+      }
+    },
+    {
+      "id": "openai-summarize",
+      "name": "Generate AI Summary",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [2140, 360],
+      "parameters": {
+        "resource": "chat",
+        "operation": "create",
+        "model": "gpt-4o-mini",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are an expert at summarizing articles. Create a concise, informative summary that captures the main points and key insights. Keep it between 150-200 words."
+            },
+            {
+              "role": "user",
+              "content": "=Summarize this article:\n\nTitle: {{ $json.articleTitle }}\n\nContent:\n{{ $json.fullArticleContent }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 500
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "openai_credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "id": "openai-generate",
+      "name": "Generate New Content",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [2360, 360],
+      "parameters": {
+        "resource": "chat",
+        "operation": "create",
+        "model": "gpt-4o-mini",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are a creative content writer. Based on the provided article, create new, original content that expands on the topic with fresh insights. Make it engaging and informative, approximately 300-400 words."
+            },
+            {
+              "role": "user",
+              "content": "=Based on this article, create new original content:\n\nTitle: {{ $json.articleTitle }}\n\nOriginal:\n{{ $json.fullArticleContent }}\n\nAdd value beyond the original article."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 1000
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "openai_credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "id": "set-airtable-data",
+      "name": "Format for Airtable",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [2580, 360],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "fields": {
+          "values": [
+            {
+              "name": "URL",
+              "type": "string",
+              "value": "={{$json.articleUrl}}"
+            },
+            {
+              "name": "Title",
+              "type": "string",
+              "value": "={{$json.articleTitle}}"
+            },
+            {
+              "name": "Published Date",
+              "type": "string",
+              "value": "={{$json.articlePubDate}}"
+            },
+            {
+              "name": "Full Content",
+              "type": "string",
+              "value": "={{$json.fullArticleContent}}"
+            },
+            {
+              "name": "AI Summary",
+              "type": "string",
+              "value": "={{$node['Generate AI Summary'].json.message?.content || 'Summary unavailable'}}"
+            },
+            {
+              "name": "Generated Content",
+              "type": "string",
+              "value": "={{$node['Generate New Content'].json.message?.content || 'Content unavailable'}}"
+            },
+            {
+              "name": "Scraping Method",
+              "type": "string",
+              "value": "={{$json.scrapingMethod}}"
+            },
+            {
+              "name": "Processed Date",
+              "type": "string",
+              "value": "={{$now.toISO()}}"
+            },
+            {
+              "name": "RSS Source",
+              "type": "string",
+              "value": "={{$env.RSS_FEED_URL}}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "airtable-append",
+      "name": "Save to Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [2800, 360],
+      "parameters": {
+        "operation": "append",
+        "application": "={{ $env.AIRTABLE_BASE_ID }}",
+        "table": "={{ $env.AIRTABLE_TABLE_NAME || 'Articles' }}",
+        "addAllFields": false,
+        "fields": {
+          "field": [
+            "URL",
+            "Title",
+            "Published Date",
+            "Full Content",
+            "AI Summary",
+            "Generated Content",
+            "Scraping Method",
+            "Processed Date",
+            "RSS Source"
+          ]
+        }
+      },
+      "credentials": {
+        "airtableApi": {
+          "id": "airtable_credentials",
+          "name": "Airtable API"
+        }
+      }
+    },
+    {
+      "id": "function-update-static",
+      "name": "Mark URL as Processed",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3020, 360],
+      "parameters": {
+        "functionCode": "// Update static data with processed URL\nconst staticData = getWorkflowStaticData('global');\n\n// Initialize array if needed\nif (!staticData.processedUrls) {\n  staticData.processedUrls = [];\n}\n\n// Add current URL to processed list\nconst currentUrl = items[0].json.URL;\nif (!staticData.processedUrls.includes(currentUrl)) {\n  staticData.processedUrls.push(currentUrl);\n  \n  // Keep only last 1000 URLs to prevent unlimited growth\n  if (staticData.processedUrls.length > 1000) {\n    staticData.processedUrls = staticData.processedUrls.slice(-1000);\n  }\n}\n\nreturn items;"
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "rss-feed-read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manual-trigger": {
+      "main": [
+        [
+          {
+            "node": "rss-feed-read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "rss-feed-read": {
+      "main": [
+        [
+          {
+            "node": "split-batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "split-batches": {
+      "main": [
+        [
+          {
+            "node": "function-dedupe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "function-dedupe": {
+      "main": [
+        [
+          {
+            "node": "if-duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-duplicate": {
+      "main": [
+        [
+          {
+            "node": "code-scraper",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "split-batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "code-scraper": {
+      "main": [
+        [
+          {
+            "node": "openai-summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "openai-summarize": {
+      "main": [
+        [
+          {
+            "node": "openai-generate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "openai-generate": {
+      "main": [
+        [
+          {
+            "node": "set-airtable-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "set-airtable-data": {
+      "main": [
+        [
+          {
+            "node": "airtable-append",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "airtable-append": {
+      "main": [
+        [
+          {
+            "node": "function-update-static",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "function-update-static": {
+      "main": [
+        [
+          {
+            "node": "split-batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": null,
+    "timezone": "UTC",
+    "executionTimeout": 3600,
+    "maxExecutions": 1000,
+    "retryOnFail": true,
+    "retryCount": 3,
+    "retryDelay": 1000
+  },
+  "tags": [
+    "rss",
+    "airtable",
+    "ai",
+    "web-scraping",
+    "automation",
+    "simplified"
+  ],
+  "meta": {
+    "instanceId": "rss-airtable-simplified",
+    "createdAt": "2025-10-23T00:00:00.000Z"
+  },
+  "description": "Simplified RSS to Airtable workflow with multi-method web scraping, AI summarization, and content generation. Uses static data for efficient deduplication. 15 nodes vs 28 in complex version."
+}
